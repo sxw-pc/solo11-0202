@@ -1,0 +1,13 @@
+[
+  {
+    "id": "approval-replacement",
+    "kind": "signoff",
+    "data": {
+      "notice": "missing-3",
+      "scan": "repair-3-replacement",
+      "officer": "curator-F",
+      "minute": 62,
+      "action": "ACCEPT"
+    }
+  }
+]

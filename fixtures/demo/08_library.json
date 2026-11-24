@@ -1,0 +1,22 @@
+[
+  {
+    "id": "missing-3",
+    "kind": "notice",
+    "data": {
+      "issue": "NEWS-42",
+      "page": 3,
+      "minute": 40
+    }
+  },
+  {
+    "id": "approval-arrives-first",
+    "kind": "signoff",
+    "data": {
+      "notice": "missing-3",
+      "scan": "repair-3",
+      "officer": "curator-F",
+      "minute": 49,
+      "action": "ACCEPT"
+    }
+  }
+]

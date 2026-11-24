@@ -1,0 +1,20 @@
+[
+  {
+    "id": "inspection-revoke",
+    "kind": "scan-check",
+    "data": {
+      "scan": "repair-3",
+      "minute": 51,
+      "verdict": "REVOKE"
+    }
+  },
+  {
+    "id": "inspection-clear",
+    "kind": "scan-check",
+    "data": {
+      "scan": "repair-3",
+      "minute": 51,
+      "verdict": "CLEAR"
+    }
+  }
+]

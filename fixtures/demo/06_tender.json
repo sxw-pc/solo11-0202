@@ -1,0 +1,9 @@
+[
+  {
+    "id": "submit-blocked",
+    "kind": "tender",
+    "data": {
+      "issue": "NEWS-42"
+    }
+  }
+]

@@ -1,0 +1,24 @@
+[
+  {
+    "id": "new-operator",
+    "kind": "witness",
+    "data": {
+      "left_reel": "R01",
+      "right_reel": "R02",
+      "role": "operator",
+      "signer": "operator-7",
+      "minute": 16,
+      "primary_reel": "R02",
+      "pairs": [
+        [
+          "R01-0002",
+          "R02-0004"
+        ],
+        [
+          "R01-0003",
+          "R02-0003"
+        ]
+      ]
+    }
+  }
+]

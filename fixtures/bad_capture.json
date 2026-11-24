@@ -1,0 +1,28 @@
+[
+  {
+    "id": "at-close",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R01-0001",
+      "minute": 100,
+      "fingerprint": "4140bf0e8569ed03ec838871ff2f190e9b3ea86bc083d7e9901049f75f00e855",
+      "image": "2329db1088e9d5fc4b4eeb7f8538f26d50d575189691611660194bb72476840b",
+      "grade": 90,
+      "ticket": null
+    }
+  },
+  {
+    "id": "wrong-image",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R01-0001",
+      "minute": 50,
+      "fingerprint": "649837ddcb7e1967086d7d35aaef7b975c513815d96fc6e70015e93a2bfe0f9a",
+      "image": "8cbc0fb4c7491cd66ad618790be4fb7db2cabf80a228349f16b285d619e7169a",
+      "grade": 90,
+      "ticket": null
+    }
+  }
+]

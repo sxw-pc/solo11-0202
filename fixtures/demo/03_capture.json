@@ -1,0 +1,103 @@
+[
+  {
+    "id": "shift-1",
+    "kind": "session",
+    "data": {
+      "operator": "operator-7",
+      "scanner": "bench-3",
+      "start": 20,
+      "end": 100
+    }
+  },
+  {
+    "id": "front-1",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R01-0001",
+      "minute": 21,
+      "fingerprint": "4140bf0e8569ed03ec838871ff2f190e9b3ea86bc083d7e9901049f75f00e855",
+      "image": "d6715d71abdca1746e3c58e904a21dd5eaca214f5beb8cfcbef46ff31b0d0c3e",
+      "grade": 90,
+      "ticket": null
+    }
+  },
+  {
+    "id": "front-2",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R01-0002",
+      "minute": 22,
+      "fingerprint": "649837ddcb7e1967086d7d35aaef7b975c513815d96fc6e70015e93a2bfe0f9a",
+      "image": "4dd8a9bba8e5850ab8ab0bbff8b4747ab920a02f90d6115f22f21375b5658c3c",
+      "grade": 90,
+      "ticket": null
+    }
+  },
+  {
+    "id": "front-3",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R01-0003",
+      "minute": 23,
+      "fingerprint": "9fde56c376760bd399b82eb8569229a2dff19219411ac71154dfeab2cf502454",
+      "image": "e1904a42f35a95e13fa0c0e7419753e9339f4ddda52548f4d574477e6cc96053",
+      "grade": 90,
+      "ticket": null
+    }
+  },
+  {
+    "id": "back-2",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R02-0004",
+      "minute": 24,
+      "fingerprint": "649837ddcb7e1967086d7d35aaef7b975c513815d96fc6e70015e93a2bfe0f9a",
+      "image": "9030ef94b33b41d7a6339b544e02e1d51b59165248c176653f7690b5bc9af795",
+      "grade": 90,
+      "ticket": null
+    }
+  },
+  {
+    "id": "back-3",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R02-0003",
+      "minute": 25,
+      "fingerprint": "9fde56c376760bd399b82eb8569229a2dff19219411ac71154dfeab2cf502454",
+      "image": "cab49dd1ad4ad372194e5fc85abdb943a660dc6574b9ccc523d8637163ea3aaa",
+      "grade": 90,
+      "ticket": null
+    }
+  },
+  {
+    "id": "back-4",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R02-0002",
+      "minute": 26,
+      "fingerprint": "697f943b9ec5f90eddda8ae7473f5eb688187e3467f312fefa8677dde255042c",
+      "image": "5511a817c1be0faec6a60aafae67358edde3db3d896672d2950c6774d094d5a6",
+      "grade": 90,
+      "ticket": null
+    }
+  },
+  {
+    "id": "back-5",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R02-0001",
+      "minute": 27,
+      "fingerprint": "fb1ec199d052a3ce6d141a28c2d706a51b99f09c2a8d61243062a046f06b68f1",
+      "image": "1b585610b436ca7cc9faab95d188bef61d3c2a390364005142dc76d2894e789c",
+      "grade": 90,
+      "ticket": null
+    }
+  }
+]

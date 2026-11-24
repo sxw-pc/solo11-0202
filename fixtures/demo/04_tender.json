@@ -1,0 +1,9 @@
+[
+  {
+    "id": "submit-1",
+    "kind": "tender",
+    "data": {
+      "issue": "NEWS-42"
+    }
+  }
+]

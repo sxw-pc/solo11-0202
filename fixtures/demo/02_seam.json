@@ -1,0 +1,46 @@
+[
+  {
+    "id": "first-op",
+    "kind": "witness",
+    "data": {
+      "left_reel": "R01",
+      "right_reel": "R02",
+      "role": "operator",
+      "signer": "operator-7",
+      "minute": 10,
+      "primary_reel": "R01",
+      "pairs": [
+        [
+          "R01-0002",
+          "R02-0004"
+        ],
+        [
+          "R01-0003",
+          "R02-0003"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "first-lib",
+    "kind": "witness",
+    "data": {
+      "left_reel": "R01",
+      "right_reel": "R02",
+      "role": "library",
+      "signer": "library-7",
+      "minute": 11,
+      "primary_reel": "R01",
+      "pairs": [
+        [
+          "R01-0002",
+          "R02-0004"
+        ],
+        [
+          "R01-0003",
+          "R02-0003"
+        ]
+      ]
+    }
+  }
+]

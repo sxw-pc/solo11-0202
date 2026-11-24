@@ -1,0 +1,15 @@
+[
+  {
+    "id": "repair-3-replacement",
+    "kind": "scan",
+    "data": {
+      "session": "shift-1",
+      "frame": "R02-0003",
+      "minute": 60,
+      "fingerprint": "9fde56c376760bd399b82eb8569229a2dff19219411ac71154dfeab2cf502454",
+      "image": "2c828913af76c667adf6adfbaa8a4dc2b563b7958e98a2d0bb265d432c574f23",
+      "grade": 90,
+      "ticket": "missing-3"
+    }
+  }
+]
