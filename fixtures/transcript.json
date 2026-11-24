@@ -1,0 +1,26 @@
+{
+  "scan": "front-1",
+  "strips": [
+    {
+      "id": "strip-2",
+      "line": 1,
+      "left": 4,
+      "right": 10,
+      "text": "office"
+    },
+    {
+      "id": "strip-1",
+      "line": 1,
+      "left": 0,
+      "right": 3,
+      "text": "The"
+    },
+    {
+      "id": "strip-3",
+      "line": 2,
+      "left": 0,
+      "right": 4,
+      "text": "opens"
+    }
+  ]
+}

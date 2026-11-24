@@ -7,7 +7,7 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from . import capture, delivery, layout, ledger, seams
+from . import capture, delivery, layout, ledger, seams, transcript
 from .storage import Rejected, connect, one, require
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -30,6 +30,7 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     for name in ("init", "demo", "audit", "scans"):
         commands.add_parser(name)
+    commands.add_parser("transcript").add_argument("file", type=Path)
     for name in (*ledger.DOMAINS, "ingest"):
         commands.add_parser(name).add_argument("file", type=Path)
     for name in ("catalog", "seam-check", "show", "history", "manifest"):
@@ -50,6 +51,8 @@ def dispatch(db, args):
         return ledger.audit(db)
     if command == "scans":
         return capture.assess(db)
+    if command == "transcript":
+        return transcript.collect(db, json.loads(args.file.read_bytes()))
     if command in ("catalog", "seam-check"):
         issue = one(db, "SELECT * FROM issues WHERE id=?", args.issue)
         require(issue, "unknown edition")
@@ -82,7 +85,7 @@ def main():
             result = dispatch(db, args)
         print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
         return int(result.get("audit") == "MISMATCH")
-    except (Rejected, OSError, sqlite3.Error) as exc:
+    except (Rejected, OSError, sqlite3.Error, json.JSONDecodeError) as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 2
 

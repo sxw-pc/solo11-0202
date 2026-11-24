@@ -48,3 +48,7 @@ python -B -m microfilm_reshoot --db work.sqlite show NEWS-42
 批次顺序决定何时知道事实，有效分钟决定同一类证据的先后。每个落库批次按最终事务状态保存版次报告和版本转移。一批补齐相互依赖的证据可避免记录一个实际未对外可见的中间状态。相同原件重试返回 `ALREADY_IMPORTED`，不同原件中的相同事件可重叠导入。已签发清单保存 SHA-256，并含帧码、实扫事件、图片摘要、会话人员和补拍单号。撤回只影响现行资格，历史清单仍可按编号核对。
 
 `layout.py` 管版式，`seams.py` 裁定重叠，`capture.py` 检查实扫和质检，`library.py` 处理馆方单据，`delivery.py` 处理清单和版本，`ledger.py` 管原始收件、事务和重算。所有夹具、回执字段和合成标识均可在本地查看。
+
+## Text strip preview
+
+After the first three demo batches are present, `python -B -m microfilm_reshoot --db work.sqlite transcript fixtures/transcript.json` builds a plain-text preview from synthetic text-strip receipts. It checks the source scan, keeps scan and frame references, orders non-overlapping strips, and reports the output span for every original strip. It does not write to the filing ledger.
