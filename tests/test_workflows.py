@@ -235,3 +235,288 @@ class LedgerTests(unittest.TestCase):
         with self.db:
             self.db.execute("UPDATE batches SET raw=X'5B5D' WHERE seq=2")
         self.assertEqual("raw SHA mismatch", ledger.audit(self.db)["reason"])
+
+
+class JointCaptureWorkflowTests(unittest.TestCase):
+    ISSUE = "JOINT-4"
+
+    def setUp(self):
+        self.db = connect(":memory:")
+        self.addCleanup(self.db.close)
+
+    def apply(self, *events):
+        return ledger.apply(self.db, json.dumps(events).encode())
+
+    def issue_events(self, issue=ISSUE):
+        return [
+            event(issue, "issue", leaves=4, rolls=1),
+            event("R1", "reel", issue=issue, rank=1, direction="forward", frames=[
+                {"slot": page, "page": page, "fingerprint": hash_of(f"leaf-{page}")}
+                for page in range(1, 5)
+            ]),
+            event("joint-shift", "session", operator="operator-J", scanner="camera-J",
+                  start=0, end=200),
+        ]
+
+    def single(self, page, scan_id=None):
+        scan_id = scan_id or f"p{page}"
+        return event(scan_id, "scan", session="joint-shift", frame=f"R1-{page:04d}",
+                     minute=10 + page, fingerprint=hash_of(f"leaf-{page}"),
+                     image=hash_of(f"image-{scan_id}"), grade=90, ticket=None)
+
+    def joint(self, joint_id, left, right, kind="joint-scan", minute=None):
+        return event(joint_id, kind, session="joint-shift", minute=minute or (30 + left),
+                     image=hash_of(f"image-{joint_id}"), grade=90, sides=[
+                         {"side": "left", "frame": f"R1-{left:04d}", "page": left,
+                          "fingerprint": hash_of(f"leaf-{left}")},
+                         {"side": "right", "frame": f"R1-{right:04d}", "page": right,
+                          "fingerprint": hash_of(f"leaf-{right}")},
+                     ])
+
+    def seed(self, singles=(1, 2, 4), joints=("J23", "J34")):
+        events = self.issue_events()
+        events.extend(self.single(page) for page in singles)
+        if "J23" in joints:
+            events.append(self.joint("J23", 2, 3))
+        if "J34" in joints:
+            events.append(self.joint("J34", 3, 4))
+        self.apply(*events)
+
+    def plan(self, anchor=None):
+        return delivery.collect(self.db, self.ISSUE, anchor=anchor)
+
+    def test_joint_receipt_records_one_image_two_sides_and_whole_qc(self):
+        self.seed()
+        assessed = capture.assess(self.db)
+        j23 = assessed["J23"]
+        self.assertEqual("USABLE", j23["state"])
+        self.assertEqual([2, 3], j23["pages"])
+        self.assertEqual(["R1-0002", "R1-0003"], j23["frame_codes"])
+        self.assertEqual(hash_of("image-J23"), j23["image"])
+        self.assertEqual("operator-J", j23["operator"])
+        self.assertEqual("camera-J", j23["scanner"])
+        self.assertEqual([hash_of("leaf-2"), hash_of("leaf-3")],
+                         [side["fingerprint"] for side in j23["sides"]])
+
+        self.apply(event("revoke-j23", "scan-check", scan="J23", minute=60, verdict="REVOKE"))
+        self.assertEqual("SCAN_REVOKED", capture.assess(self.db)["J23"]["state"])
+        self.assertFalse(self.plan("J23")["complete"])
+
+    def test_exact_whole_cover_supports_either_retention_anchor(self):
+        self.seed()
+        unanchored = self.plan(anchor=False)
+        self.assertTrue(unanchored["complete"], unanchored["blockers"])
+        covered = [page for item in unanchored["items"] for page in item["pages"]]
+        self.assertEqual([1, 2, 3, 4], sorted(covered))
+        self.assertEqual(4, len(covered))
+        self.assertFalse({"J23", "J34"} <= set(unanchored["selected_item_ids"]))
+
+        expected = {
+            "J23": {"p1", "J23", "p4"},
+            "J34": {"p1", "p2", "J34"},
+        }
+        for anchor, ids in expected.items():
+            with self.subTest(anchor=anchor):
+                plan = self.plan(anchor)
+                self.assertTrue(plan["complete"], plan["blockers"])
+                self.assertEqual(ids, set(plan["selected_item_ids"]))
+                manifest = delivery.collection_manifest(self.db, self.ISSUE, plan=plan)
+                by_page = {entry["page"]: entry for entry in manifest["pages"]}
+                self.assertEqual([1, 2, 3, 4], sorted(by_page))
+                self.assertEqual(anchor, by_page[int(anchor[1])]["item"])
+                self.assertEqual(anchor, by_page[int(anchor[2])]["item"])
+                self.assertEqual(by_page[int(anchor[1])]["image"],
+                                 by_page[int(anchor[2])]["image"])
+                self.assertEqual(2, manifest["items"][[i["item"] for i in manifest["items"]].index(anchor)]["page_count"])
+                for page, entry in by_page.items():
+                    self.assertEqual(page, entry["page"])
+                    self.assertIn(entry["kind"], ("scan", "joint-scan"))
+                    self.assertIn(entry["source_kind"],
+                                  ("original-scan", "reshoot-scan", "joint-scan"))
+                    self.assertTrue(entry["item"])
+
+    def test_persisted_anchor_drives_manifest_and_tender(self):
+        self.seed()
+        self.apply(event("keep-j23", "retention-anchor", issue=self.ISSUE,
+                         joint="J23", minute=40),
+                   event("tender-j23", "tender", issue=self.ISSUE))
+        report = delivery.last_report(self.db, self.ISSUE)
+        self.assertEqual("J23", report["anchor"])
+        self.assertEqual("TENDER_ISSUED", report["tender"]["state"])
+        current = delivery.manifest(self.db, self.ISSUE, None)
+        self.assertEqual({"p1", "J23", "p4"},
+                         {item["item"] for item in current["manifest"]["items"]})
+        self.assertEqual("J23", current["manifest"]["pages"][1]["item"])
+        self.assertEqual("J23", current["manifest"]["pages"][2]["item"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_anchor_failure_names_page_lost_to_occupied_joint(self):
+        self.seed(singles=(1, 2))  # no independent page-4 original scan
+        self.apply(event("keep-j23", "anchor", issue=self.ISSUE, joint="J23"))
+        plan = self.plan()
+        self.assertFalse(plan["complete"])
+        self.assertEqual([4], plan["missing_pages"])
+        diagnostic = plan["diagnostics"][0]
+        self.assertEqual(4, diagnostic["page"])
+        blocked = diagnostic["blocked_items"][0]
+        self.assertEqual("J34", blocked["item"])
+        self.assertEqual([3], blocked["overlap_pages"])
+        self.assertEqual("J23", blocked["occupied_by"])
+
+        report, _manifest = delivery.compose(self.db, self.ISSUE)
+        self.assertEqual(["COLLECTION_PAGE_UNAVAILABLE:4"], report["blockers"])
+        self.apply(event("denied", "tender", issue=self.ISSUE))
+        self.assertEqual("TENDER_DENIED", delivery.last_report(self.db, self.ISSUE)["tender"]["state"])
+
+    def test_independent_page_two_signoff_blocks_entire_j23(self):
+        self.seed()
+        self.apply(event("keep-j23", "retention-anchor", issue=self.ISSUE, joint="J23"),
+                   event("tender-before-notice", "tender", issue=self.ISSUE))
+        self.assertEqual("TENDER_ISSUED",
+                         delivery.last_report(self.db, self.ISSUE)["tender"]["state"])
+
+        self.apply(
+            event("missing-2", "notice", issue=self.ISSUE, page=2, minute=40),
+            event("repair-2", "scan", session="joint-shift", frame="R1-0002", minute=45,
+                  fingerprint=hash_of("leaf-2"), image=hash_of("repair-2"), grade=95,
+                  ticket="missing-2"),
+            event("accept-2", "signoff", notice="missing-2", scan="repair-2",
+                  officer="curator-J", minute=50, action="ACCEPT"),
+        )
+        report = delivery.last_report(self.db, self.ISSUE)
+        self.assertEqual("RESHOOT_ACCEPTED", report["pages"][1]["library"]["state"])
+        joint_report = next(joint for joint in report["joints"] if joint["id"] == "J23")
+        self.assertFalse(joint_report["eligible"])
+        self.assertEqual([2], joint_report["constraint"]["blocked_pages"])
+        self.assertEqual([2], joint_report["constraint"]["independently_signed_pages"])
+        self.assertTrue(any("RETENTION_ANCHOR_UNAVAILABLE:J23" in blocker
+                            for blocker in report["blockers"]))
+        self.assertEqual("WITHDRAWN", report["versions"][0]["state"])
+        self.assertEqual({"p1", "J23", "p4"},
+                         {item["item"] for item in delivery.manifest(self.db, self.ISSUE, 1)
+                          ["manifest"]["items"]})
+
+        alternative = self.plan(anchor=False)
+        self.assertTrue(alternative["complete"])
+        self.assertEqual({"p1", "repair-2", "J34"}, set(alternative["selected_item_ids"]))
+
+        # Dismissing the late notice restores the unticketed J23 proof; a new
+        # tender is required because evidence recovery does not self-issue.
+        self.apply(event("dismiss-2", "signoff", notice="missing-2", scan=None,
+                         officer="curator-J", minute=70, action="DISMISS"),
+                   event("tender-recovered", "tender", issue=self.ISSUE))
+        outcome = delivery.last_report(self.db, self.ISSUE)["tender"]
+        self.assertEqual("TENDER_ISSUED", outcome["state"])
+        self.assertEqual(2, outcome["version"])
+        self.assertEqual({"p1", "J23", "p4"},
+                         {item["item"] for item in delivery.manifest(self.db, self.ISSUE, None)
+                          ["manifest"]["items"]})
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_late_revocation_and_recovery_preserve_signed_anchor_manifest(self):
+        self.seed()
+        self.apply(event("keep-j23", "retention-anchor", issue=self.ISSUE, joint="J23"),
+                   event("tender-1", "tender", issue=self.ISSUE))
+        version = delivery.manifest(self.db, self.ISSUE, None)
+        self.assertEqual(1, version["seq"])
+
+        self.apply(event("late-revoke-p4", "scan-check", scan="p4", minute=60,
+                         verdict="REVOKE"))
+        report = delivery.last_report(self.db, self.ISSUE)
+        self.assertTrue(any(blocker == "COLLECTION_PAGE_UNAVAILABLE:4"
+                            for blocker in report["blockers"]))
+        self.assertEqual("WITHDRAWN", report["versions"][0]["state"])
+        with self.assertRaisesRegex(Rejected, "no current"):
+            delivery.manifest(self.db, self.ISSUE, None)
+        old = delivery.manifest(self.db, self.ISSUE, 1)
+        self.assertEqual(version["manifest"], old["manifest"])
+
+        self.apply(event("late-clear-p4", "scan-check", scan="p4", minute=70,
+                         verdict="CLEAR"),
+                   event("tender-2", "tender", issue=self.ISSUE))
+        outcome = delivery.last_report(self.db, self.ISSUE)["tender"]
+        self.assertEqual("TENDER_ISSUED", outcome["state"])
+        self.assertEqual(2, outcome["version"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_late_joint_revocation_withdraws_whole_artifact_and_resigns(self):
+        self.seed()
+        self.apply(event("keep-j34", "retention-anchor", issue=self.ISSUE, joint="J34"),
+                   event("tender-j34-1", "tender", issue=self.ISSUE))
+        self.assertEqual("J34", delivery.manifest(self.db, self.ISSUE, None)
+                         ["manifest"]["items"][-1]["item"])
+
+        self.apply(event("revoke-j34", "scan-check", scan="J34", minute=60, verdict="REVOKE"))
+        self.assertEqual("SCAN_REVOKED", capture.assess(self.db)["J34"]["state"])
+        report = delivery.last_report(self.db, self.ISSUE)
+        self.assertTrue(any("RETENTION_ANCHOR_UNAVAILABLE:J34" in b for b in report["blockers"]))
+        self.assertEqual("WITHDRAWN", report["versions"][0]["state"])
+        self.assertEqual({"p1", "p2", "J34"},
+                         {i["item"] for i in delivery.manifest(self.db, self.ISSUE, 1)
+                          ["manifest"]["items"]})
+
+        self.apply(event("clear-j34", "scan-check", scan="J34", minute=70, verdict="CLEAR"),
+                   event("tender-j34-2", "tender", issue=self.ISSUE))
+        outcome = delivery.last_report(self.db, self.ISSUE)["tender"]
+        self.assertEqual("TENDER_ISSUED", outcome["state"])
+        self.assertEqual(2, outcome["version"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_certified_seam_gates_canonical_frames_for_joint_sides(self):
+        issue = "SEAM-JOINT"
+        events = [
+            event(issue, "issue", leaves=4, rolls=2),
+            event("R1", "reel", issue=issue, rank=1, direction="forward", frames=[
+                {"slot": 1, "page": 1, "fingerprint": hash_of("leaf-1")},
+                {"slot": 2, "page": 2, "fingerprint": hash_of("leaf-2")},
+                {"slot": 3, "page": 3, "fingerprint": hash_of("leaf-3")},
+            ]),
+            event("R2", "reel", issue=issue, rank=2, direction="reverse", frames=[
+                {"slot": 1, "page": 4, "fingerprint": hash_of("leaf-4")},
+                {"slot": 2, "page": 3, "fingerprint": hash_of("leaf-3")},
+                {"slot": 3, "page": 2, "fingerprint": hash_of("leaf-2")},
+            ]),
+            event("joint-shift", "session", operator="O", scanner="C", start=0, end=200),
+            event("p1", "scan", session="joint-shift", frame="R1-0001", minute=11,
+                  fingerprint=hash_of("leaf-1"), image=hash_of("img1"), grade=90, ticket=None),
+            event("p2", "scan", session="joint-shift", frame="R1-0002", minute=12,
+                  fingerprint=hash_of("leaf-2"), image=hash_of("img2"), grade=90, ticket=None),
+            event("p4", "scan", session="joint-shift", frame="R2-0001", minute=14,
+                  fingerprint=hash_of("leaf-4"), image=hash_of("img4"), grade=90, ticket=None),
+            self.joint("J23", 2, 3),
+        ]
+        # self.joint uses self.ISSUE only indirectly? Frame IDs are reel R1, so okay.
+        self.apply(*events)
+        blocked = delivery.collect(self.db, issue, anchor="J23")
+        self.assertFalse(blocked["complete"])
+        self.assertIn("RETENTION_ANCHOR_UNAVAILABLE:J23", blocked["blockers"])
+
+        pairs = [["R1-0002", "R2-0003"], ["R1-0003", "R2-0002"]]
+        self.apply(
+            event("op-witness", "witness", left_reel="R1", right_reel="R2",
+                  role="operator", signer="op-1", minute=10, primary_reel="R1", pairs=pairs),
+            event("lib-witness", "witness", left_reel="R1", right_reel="R2",
+                  role="library", signer="lib-1", minute=11, primary_reel="R1", pairs=pairs),
+        )
+        plan = delivery.collect(self.db, issue, anchor="J23")
+        self.assertTrue(plan["complete"], plan["blockers"])
+        self.assertEqual({"p1", "p4", "J23"}, set(plan["selected_item_ids"]))
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_double_scan_alias_and_left_right_receipt_shape(self):
+        fp2, fp3 = hash_of("leaf-2"), hash_of("leaf-3")
+        self.apply(
+            event(self.ISSUE, "issue", leaves=3, rolls=1),
+            event("R1", "reel", issue=self.ISSUE, rank=1, direction="forward", frames=[
+                {"slot": 2, "page": 2, "fingerprint": fp2},
+                {"slot": 3, "page": 3, "fingerprint": fp3},
+            ]),
+            event("shift", "session", operator="O", scanner="C", start=0, end=10),
+            event("D23", "double-scan", shift="shift", captured_minute=5,
+                  image_digest=hash_of("D23"), quality=90,
+                  left={"code": "R1-0002", "logical_page": 2, "content_fingerprint": fp2},
+                  right={"code": "R1-0003", "logical_page": 3, "content_fingerprint": fp3}),
+        )
+        self.assertEqual("USABLE", capture.assess(self.db)["D23"]["state"])
+        self.assertEqual([2, 3], capture.assess(self.db)["D23"]["pages"])
+

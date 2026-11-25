@@ -32,11 +32,13 @@ def parser():
         commands.add_parser(name)
     for name in (*ledger.DOMAINS, "ingest"):
         commands.add_parser(name).add_argument("file", type=Path)
-    for name in ("catalog", "seam-check", "show", "history", "manifest"):
+    for name in ("catalog", "seam-check", "show", "history", "manifest", "collect"):
         command = commands.add_parser(name)
         command.add_argument("issue")
         if name == "manifest":
             command.add_argument("--version", type=int)
+        if name == "collect":
+            command.add_argument("--anchor")
     return result
 
 
@@ -69,6 +71,8 @@ def dispatch(db, args):
         return ledger.history(db, args.issue)
     if command == "manifest":
         return delivery.manifest(db, args.issue, args.version)
+    if command == "collect":
+        return delivery.collect(db, args.issue, anchor=args.anchor)
     return ledger.apply(db, args.file.read_bytes(), None if command == "ingest" else command)
 
 

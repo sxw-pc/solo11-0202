@@ -59,7 +59,21 @@ CREATE TABLE IF NOT EXISTS signoffs (
     id TEXT PRIMARY KEY, notice TEXT NOT NULL, scan TEXT, officer TEXT NOT NULL, minute INTEGER NOT NULL, action TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tenders (
-    id TEXT PRIMARY KEY, issue TEXT NOT NULL, batch INTEGER NOT NULL REFERENCES batches(seq)
+    id TEXT PRIMARY KEY, issue TEXT NOT NULL, batch INTEGER NOT NULL REFERENCES batches(seq),
+    anchor TEXT
+);
+CREATE TABLE IF NOT EXISTS joint_captures (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, session TEXT NOT NULL, minute INTEGER NOT NULL,
+    image TEXT NOT NULL, grade INTEGER NOT NULL, ticket TEXT, payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS joint_sides (
+    joint TEXT NOT NULL REFERENCES joint_captures(id), position INTEGER NOT NULL,
+    side TEXT, page INTEGER, frame TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    PRIMARY KEY(joint, position)
+);
+CREATE TABLE IF NOT EXISTS retention_anchors (
+    id TEXT PRIMARY KEY, issue TEXT NOT NULL REFERENCES issues(id), joint TEXT NOT NULL,
+    minute INTEGER, batch INTEGER REFERENCES batches(seq), payload TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS versions (
     tender TEXT PRIMARY KEY REFERENCES tenders(id), issue TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -75,7 +89,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
 # These projections are independently compared with a clean evidence replay.
 TABLES = (
     "batches", "events", "issues", "reels", "frames", "witnesses", "sessions",
-    "scans", "scan_checks", "notices", "signoffs", "tenders", "versions", "snapshots",
+    "scans", "scan_checks", "joint_captures", "joint_sides", "notices", "signoffs",
+    "retention_anchors", "tenders", "versions", "snapshots",
 )
 
 
@@ -87,6 +102,9 @@ def connect(path, *, readonly=False):
     db.execute("PRAGMA foreign_keys = ON")
     if not readonly:
         db.executescript(SCHEMA)
+        tender_columns = {row[1] for row in db.execute("PRAGMA table_info(tenders)")}
+        if "anchor" not in tender_columns:
+            db.execute("ALTER TABLE tenders ADD COLUMN anchor TEXT")
     return db
 
 

@@ -8,7 +8,9 @@ from . import capture, delivery, layout, library, seams
 from .storage import TABLES, Rejected, connect, digest, encode, insert, one, require, rows, text
 
 DOMAINS = {"layout": layout.RULES, "seam": seams.RULES, "capture": capture.RULES,
-           "library": library.RULES, "tender": delivery.RULES}
+           "joint": capture.RULES, "double": capture.RULES,
+           "library": library.RULES, "retention": library.RULES, "anchor": library.RULES,
+           "delivery": delivery.RULES, "tender": delivery.RULES}
 RULES = {kind: rule for domain in DOMAINS.values() for kind, rule in domain.items()}
 
 
@@ -31,10 +33,17 @@ def decode(raw, rules):
         require(isinstance(event, dict) and set(event) == {"id", "kind", "data"}, "invalid event envelope")
         event_id, kind, data = event["id"], event["kind"], event["data"]
         require(text(event_id) and text(kind) and kind in rules, "invalid or out-of-scope event kind or id")
-        validators, handler = rules[kind]
-        require(isinstance(data, dict) and set(data) == set(validators), f"{event_id}: invalid {kind} fields")
-        for key, validator in validators.items():
-            require(validator(data[key]), f"{event_id}: invalid {key}")
+        rule = rules[kind]
+        validators, handler = rule[0], rule[1]
+        optional = rule[2] if len(rule) > 2 else frozenset()
+        require(isinstance(data, dict), f"{event_id}: invalid event data")
+        if validators is not None:
+            fields = set(validators)
+            require(set(data) <= fields and fields - optional <= set(data),
+                     f"{event_id}: invalid {kind} fields")
+            for key in fields & set(data):
+                validator = validators[key]
+                require(validator(data[key]), f"{event_id}: invalid {key}")
         parsed.append((event_id, kind, data, handler))
     return parsed
 
