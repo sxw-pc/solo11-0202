@@ -57,10 +57,14 @@ def dispatch(db, args):
         if command == "catalog":
             return layout.catalog(issue, reels, by_reel, by_page)
         edges = seams.certify_all(db, reels, by_reel)
-        routes = {p: seams.route(f, edges) for p, f in by_page.items()}
+        routes = {p: seams.resolve_page(f, edges, page=p) for p, f in by_page.items()}
         return {"edition": args.issue, "edges": edges,
-                "routes": {p: {"state": state, "frame": frame["id"] if frame else None}
-                           for p, (state, frame) in routes.items()}}
+                "routes": {p: {"state": info["state"],
+                               "frame": info["primary"]["id"] if info["primary"] else None,
+                               "candidates": [f["id"] for f in info["candidates"]],
+                               "triple": info["triple"],
+                               "candidate_reels": info["candidate_reels"]}
+                           for p, info in routes.items()}}
     if command == "show":
         report = delivery.last_report(db, args.issue)
         require(report, "unknown edition")

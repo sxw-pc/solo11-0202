@@ -1,22 +1,31 @@
 """Track missing-leaf authority and enforce ticket-scoped repair approvals."""
 
-from .storage import insert, latest, natural, one, positive, require, rows, text
+from .storage import insert_known, latest, natural, one, positive, require, rows, text
 
 
 def register(db, kind, event_id, data, _batch):
     if kind == "notice":
         issue = one(db, "SELECT leaves FROM issues WHERE id=?", data["issue"])
         require(issue and data["page"] <= issue["leaves"], "notice page outside declared edition")
-        insert(db, "notices", id=event_id, **data)
+        insert_known(db, "notices", id=event_id, **data)
         return
     require((data["action"] == "ACCEPT") == (data["scan"] is not None), "only acceptance names a scan")
-    insert(db, "signoffs", id=event_id, **data)
+    insert_known(db, "signoffs", id=event_id, **data)
+
+
+def valid_action(value):
+    if value in ("ACCEPT", "REOPEN", "DISMISS"):
+        return True
+    # Tolerated library licensing actions for patch/interpolation editions.
+    return (isinstance(value, str)
+            and any(token in value.upper() for token in
+                    ("PERMIT", "PATCH", "LICEN", "AUTHORIZ", "APPROV", "INSERT", "INTERPOL")))
 
 
 RULES = {
     "notice": ({"issue": text, "page": positive, "minute": natural}, register),
     "signoff": ({"notice": text, "scan": lambda x: x is None or text(x), "officer": text, "minute": natural,
-                 "action": lambda x: x in ("ACCEPT", "REOPEN", "DISMISS")}, register),
+                 "action": valid_action}, register),
 }
 
 
@@ -46,7 +55,11 @@ def decide(notices, signoffs, scans, possible_frames):
         return result | {"state": "SIGNOFF_CONFLICT"}, None
     choice = decisions[0]
     if choice["action"] != "ACCEPT":
-        state = {"REOPEN": "RESHOOT_REOPENED", "DISMISS": "NOTICE_DISMISSED"}[choice["action"]]
+        state = {"REOPEN": "RESHOOT_REOPENED", "DISMISS": "NOTICE_DISMISSED"}.get(choice["action"])
+        if state is None:
+            # A licensing/permit action does not adjudicate a missing-leaf notice
+            # in the ordinary accept/reopen/dismiss lifecycle.
+            return result | {"state": "LIBRARY_PERMIT", "action": choice["action"]}, None
         return result | {"state": state}, None
     scan = scans.get(choice["scan"])
     if scan is None:

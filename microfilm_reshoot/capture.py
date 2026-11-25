@@ -1,6 +1,6 @@
 """Adjudicate physical captures and independent image quality checks."""
 
-from .storage import fingerprint, insert, latest, natural, require, rows, text
+from .storage import fingerprint, insert_known, latest, natural, require, rows, text
 
 
 def register(db, kind, event_id, data, _batch):
@@ -9,7 +9,7 @@ def register(db, kind, event_id, data, _batch):
     if kind == "scan":
         require(data["grade"] <= 100, "scan grade outside 0..100")
     table = {"session": "sessions", "scan": "scans", "scan-check": "scan_checks"}[kind]
-    insert(db, table, id=event_id, **data)
+    insert_known(db, table, id=event_id, **data)
 
 
 RULES = {

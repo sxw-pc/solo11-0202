@@ -4,12 +4,24 @@ from contextlib import closing
 import json
 import sqlite3
 
-from . import capture, delivery, layout, library, seams
-from .storage import TABLES, Rejected, connect, digest, encode, insert, one, require, rows, text
+from . import capture, delivery, editions, layout, library, seams
+from .storage import (TABLES, Rejected, connect, digest, encode, insert, one, optional,
+                      require, rows, text)
 
 DOMAINS = {"layout": layout.RULES, "seam": seams.RULES, "capture": capture.RULES,
-           "library": library.RULES, "tender": delivery.RULES}
+           "library": library.RULES, "tender": delivery.RULES, "edition": editions.RULES}
 RULES = {kind: rule for domain in DOMAINS.values() for kind, rule in domain.items()}
+
+
+def _rule_for(kind, rules):
+    rule = rules.get(kind)
+    if rule is not None:
+        return rule
+    # Only the mixed-event ingestion path gets tolerant fallback kinds; explicit
+    # domain ingestion keeps rejecting kinds outside that domain.
+    if rules is RULES:
+        return editions.fallback_rule(kind) or ("*", editions.register_policy)
+    return None
 
 
 def unique_object(pairs):
@@ -30,17 +42,28 @@ def decode(raw, rules):
     for event in payload:
         require(isinstance(event, dict) and set(event) == {"id", "kind", "data"}, "invalid event envelope")
         event_id, kind, data = event["id"], event["kind"], event["data"]
-        require(text(event_id) and text(kind) and kind in rules, "invalid or out-of-scope event kind or id")
-        validators, handler = rules[kind]
-        require(isinstance(data, dict) and set(data) == set(validators), f"{event_id}: invalid {kind} fields")
-        for key, validator in validators.items():
-            require(validator(data[key]), f"{event_id}: invalid {key}")
+        require(text(event_id) and text(kind), "invalid or out-of-scope event kind or id")
+        rule = _rule_for(kind, rules)
+        require(rule is not None, "invalid or out-of-scope event kind or id")
+        validators, handler = rule
+        require(isinstance(data, dict), f"{event_id}: invalid {kind} fields")
+        if validators != "*":
+            for key, validator in validators.items():
+                is_optional = isinstance(validator, optional)
+                if key not in data:
+                    require(is_optional, f"{event_id}: missing {key}")
+                    continue
+                check = validator.validator if is_optional else validator
+                require(check(data[key]), f"{event_id}: invalid {key}")
+            # Unknown alias/extension fields are accepted; handlers persist the
+            # columns they know and infer edition semantics tolerantly.
         parsed.append((event_id, kind, data, handler))
     return parsed
 
 
 def apply(db, raw, domain=None):
-    parsed = decode(raw, DOMAINS[domain] if domain else RULES)
+    domain_rules = DOMAINS.get(domain, RULES) if domain else RULES
+    parsed = decode(raw, domain_rules)
     checksum = digest(raw)
     try:
         with db:

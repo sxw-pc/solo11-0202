@@ -1,5 +1,6 @@
 """Declare the roll order and address physical film frames."""
 
+from . import editions
 from .storage import fingerprint, insert, one, positive, require, rows, text
 
 
@@ -7,7 +8,9 @@ def register(db, kind, event_id, data, _batch):
     if kind == "issue":
         require(0 < data["leaves"] <= 10000, "edition page count outside 1..10000")
         require(data["rolls"] <= 9999, "edition roll count outside 1..9999")
-        insert(db, "issues", id=event_id, **data)
+        caliber = editions.detect_mode(data)
+        insert(db, "issues", id=event_id, leaves=data["leaves"], rolls=data["rolls"],
+               caliber=caliber)
         return
     issue = one(db, "SELECT * FROM issues WHERE id = ?", data["issue"])
     require(issue is not None, "reel must reference a declared edition")

@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS events (
     batch INTEGER NOT NULL REFERENCES batches(seq)
 );
 CREATE TABLE IF NOT EXISTS issues (
-    id TEXT PRIMARY KEY, leaves INTEGER NOT NULL, rolls INTEGER NOT NULL
+    id TEXT PRIMARY KEY, leaves INTEGER NOT NULL, rolls INTEGER NOT NULL, caliber TEXT
 );
 CREATE TABLE IF NOT EXISTS reels (
     id TEXT PRIMARY KEY, issue TEXT NOT NULL REFERENCES issues(id), rank INTEGER NOT NULL, direction TEXT NOT NULL,
@@ -59,7 +59,11 @@ CREATE TABLE IF NOT EXISTS signoffs (
     id TEXT PRIMARY KEY, notice TEXT NOT NULL, scan TEXT, officer TEXT NOT NULL, minute INTEGER NOT NULL, action TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tenders (
-    id TEXT PRIMARY KEY, issue TEXT NOT NULL, batch INTEGER NOT NULL REFERENCES batches(seq)
+    id TEXT PRIMARY KEY, issue TEXT NOT NULL, batch INTEGER NOT NULL REFERENCES batches(seq), caliber TEXT
+);
+CREATE TABLE IF NOT EXISTS edition_policies (
+    id TEXT PRIMARY KEY, issue TEXT, batch INTEGER REFERENCES batches(seq),
+    kind TEXT NOT NULL, caliber TEXT, permitted INTEGER NOT NULL DEFAULT 0, body TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS versions (
     tender TEXT PRIMARY KEY REFERENCES tenders(id), issue TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -76,7 +80,32 @@ CREATE TABLE IF NOT EXISTS snapshots (
 TABLES = (
     "batches", "events", "issues", "reels", "frames", "witnesses", "sessions",
     "scans", "scan_checks", "notices", "signoffs", "tenders", "versions", "snapshots",
+    "edition_policies",
 )
+
+
+def table_columns(db, table):
+    return {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+
+
+def insert_known(db, table, **fields):
+    """Insert only keys that are real columns, tolerating alias/extra intake fields."""
+    known = table_columns(db, table)
+    return insert(db, table, **{key: value for key, value in fields.items() if key in known})
+
+
+class optional:
+    """Validator wrapper marking an event field as optional under lenient decoding."""
+
+    def __init__(self, validator):
+        self.validator = validator
+        try:
+            self.__name__ = getattr(validator, "__name__", "optional")
+        except Exception:  # pragma: no cover - metadata only
+            pass
+
+    def __call__(self, value):
+        return self.validator(value)
 
 
 def connect(path, *, readonly=False):
