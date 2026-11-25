@@ -31,10 +31,26 @@ def decode(raw, rules):
         require(isinstance(event, dict) and set(event) == {"id", "kind", "data"}, "invalid event envelope")
         event_id, kind, data = event["id"], event["kind"], event["data"]
         require(text(event_id) and text(kind) and kind in rules, "invalid or out-of-scope event kind or id")
-        validators, handler = rules[kind]
-        require(isinstance(data, dict) and set(data) == set(validators), f"{event_id}: invalid {kind} fields")
-        for key, validator in validators.items():
-            require(validator(data[key]), f"{event_id}: invalid {key}")
+        rule = rules[kind]
+        if len(rule) == 3:
+            validators, optional_validators, handler = rule
+        else:
+            validators, handler = rule
+            optional_validators = {}
+        if callable(validators) and not isinstance(validators, dict):
+            # Flexible schema normalizes equivalent field namings itself.
+            data = validators(data)
+            require(isinstance(data, dict), f"{event_id}: invalid {kind} data")
+        else:
+            require(isinstance(data, dict), f"{event_id}: invalid {kind} fields")
+            allowed = set(validators) | set(optional_validators)
+            require(set(data) <= allowed and set(validators) <= set(data),
+                    f"{event_id}: invalid {kind} fields")
+            for key, validator in validators.items():
+                require(validator(data[key]), f"{event_id}: invalid {key}")
+            for key, validator in optional_validators.items():
+                if key in data:
+                    require(validator(data[key]), f"{event_id}: invalid {key}")
         parsed.append((event_id, kind, data, handler))
     return parsed
 

@@ -28,7 +28,7 @@ def parser():
     result = argparse.ArgumentParser(description="Microfilm roll/reshoot ledger")
     result.add_argument("--db", required=True, help="SQLite path or :memory:")
     commands = result.add_subparsers(dest="command", required=True)
-    for name in ("init", "demo", "audit", "scans"):
+    for name in ("init", "demo", "audit", "scans", "clocks"):
         commands.add_parser(name)
     for name in (*ledger.DOMAINS, "ingest"):
         commands.add_parser(name).add_argument("file", type=Path)
@@ -50,6 +50,8 @@ def dispatch(db, args):
         return ledger.audit(db)
     if command == "scans":
         return capture.assess(db)
+    if command == "clocks":
+        return capture.calibration_report(db)
     if command in ("catalog", "seam-check"):
         issue = one(db, "SELECT * FROM issues WHERE id=?", args.issue)
         require(issue, "unknown edition")

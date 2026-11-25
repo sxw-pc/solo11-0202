@@ -235,3 +235,252 @@ class LedgerTests(unittest.TestCase):
         with self.db:
             self.db.execute("UPDATE batches SET raw=X'5B5D' WHERE seq=2")
         self.assertEqual("raw SHA mismatch", ledger.audit(self.db)["reason"])
+
+    # ----- shift-wide clock calibration and delivery time proofs -----
+
+    CLOCK_EXPOSURES = {"front-1": 1, "front-2": 2, "front-3": 3, "back-2": 4,
+                       "back-3": 5, "back-4": 6, "back-5": 7, "repair-3": 8}
+
+    def calibration(self, id="clock-review", **overrides):
+        data = {"session": "shift-1", "seq_map": self.CLOCK_EXPOSURES, "boundaries": [7],
+                "left_offsets": [0], "right_offsets": [0, 4]}
+        data.update(overrides)
+        return event(id, "clock-calibration", **data)
+
+    def tender_proof(self, id, proof):
+        self.apply(event(id, "tender", issue=ISSUE, proof=proof))
+        return self.report()["tender"]
+
+    def window_scenario(self):
+        self.stages(1, 9)
+        self.apply(self.calibration())
+        self.assertEqual(44, one(self.db, "SELECT minute FROM scans WHERE id='repair-3'")["minute"])
+        clock = capture.possible_minutes(self.db, "repair-3")
+        self.assertEqual([44, 48], clock)
+        accepted = self.page(3)
+        self.assertEqual("RESHOOT_ACCEPTED", accepted["state"])
+        self.assertEqual([44, 48], accepted["library"]["clock"]["possible_minutes"])
+        self.assertEqual([44, 48], accepted["library"]["clock"]["time_window"])
+        self.assertTrue(accepted["library"]["clock"]["all_authorized"])
+
+        denied = self.tender_proof("exact-before-reading", "exact")
+        self.assertEqual("TENDER_DENIED", denied["state"])
+        self.assertTrue(any("EXACT_TIME_PROOF_REQUIRED" in b for b in self.report()["blockers"]))
+
+        issued = self.tender_proof("window-delivery", "window")
+        self.assertEqual("TENDER_ISSUED", issued["state"])
+        window_version = issued["version"]
+        proof_page = delivery.manifest(self.db, ISSUE, None)["manifest"]["pages"][2]
+        self.assertEqual("repair-3", proof_page["scan"])
+        self.assertEqual(44, proof_page["captured_minute"])
+        self.assertEqual(44, proof_page["original_minute"])
+        self.assertEqual([44, 48], proof_page["possible_minutes"])
+        self.assertEqual([44, 48], proof_page["time_window"])
+        self.assertEqual("window", proof_page["time_proof"])
+        self.assertIsNone(proof_page["corrected_minute"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+        return window_version
+
+    def test_window_proof_issues_for_minutes_44_or_48_exact_awaits_proof(self):
+        self.window_scenario()
+
+    def test_supplemented_reading_pins_48_and_exact_proof_issues(self):
+        window_version = self.window_scenario()
+        self.apply(event("reading-48", "clock-reading", session="shift-1", seq=8, minute=48))
+        self.assertEqual([48], capture.possible_minutes(self.db, "repair-3"))
+        last_change = self.report()["transitions"][-1]
+        self.assertEqual(window_version, last_change["version"])
+        self.assertEqual("WITHDRAWN", last_change["to"])
+
+        issued = self.tender_proof("exact-after-reading", "exact")
+        self.assertEqual("TENDER_ISSUED", issued["state"])
+        proof_page = delivery.manifest(self.db, ISSUE, None)["manifest"]["pages"][2]
+        self.assertEqual([48], proof_page["possible_minutes"])
+        self.assertEqual([48, 48], proof_page["time_window"])
+        self.assertEqual(48, proof_page["corrected_minute"])
+        self.assertEqual("exact", proof_page["time_proof"])
+        # The withdrawn window manifest remains independently verifiable.
+        old = delivery.manifest(self.db, ISSUE, window_version)
+        self.assertEqual("WITHDRAWN", old["state"])
+        self.assertEqual([44, 48], old["manifest"]["pages"][2]["possible_minutes"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def seed_clock_world(self, *, start=0, end=1000, notice_minute=0, signoff_minute=50):
+        self.apply(event(ISSUE, "issue", leaves=1, rolls=1),
+                   event("R1", "reel", issue=ISSUE, rank=1, direction="forward", frames=[
+                       {"slot": 1, "page": 1, "fingerprint": hash_of("leaf-1")}]),
+                   event("clock-shift", "session", operator="O", scanner="B", start=start, end=end),
+                   event("solo", "scan", session="clock-shift", frame="R1-0001", minute=10,
+                         fingerprint=hash_of("leaf-1"), image=hash_of("img-solo"), grade=90, ticket="n1"),
+                   event("partner", "scan", session="clock-shift", frame="R1-0001", minute=12,
+                         fingerprint=hash_of("leaf-1"), image=hash_of("img-partner"), grade=90, ticket=None),
+                   event("n1", "notice", issue=ISSUE, page=1, minute=notice_minute),
+                   event("accept-1", "signoff", notice="n1", scan="solo", officer="C",
+                         minute=signoff_minute, action="ACCEPT"))
+
+    def test_individual_offsets_plausible_but_no_shared_shift_interpretation(self):
+        self.seed_clock_world()
+        # Seq 1 raw 10 needs offset 0; seq 2 raw 12 needs offset +5. Both share
+        # the single left offset, so no whole-shift timeline survives.
+        self.apply(event("no-common-clock", "calibration", session="clock-shift",
+                         exposures=[{"scan": "solo", "seq": 1}, {"scan": "partner", "seq": 2}],
+                         boundaries=[2], left_offsets=[0, 5], right_offsets=[0],
+                         readings=[{"seq": 1, "minute": 10}, {"seq": 2, "minute": 17}]))
+        shift = capture.calibrate(self.db, "clock-shift")
+        self.assertEqual("CLOCK_UNCALIBRATABLE", shift["state"])
+        self.assertEqual([], shift["timelines"])
+        self.assertEqual("CLOCK_UNCALIBRATABLE", self.page(1)["state"])
+        self.assertEqual("TENDER_DENIED", self.tender_proof("deny-no-common", "window")["state"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_reversed_corrected_order_is_excluded_but_same_minute_tie_allowed(self):
+        self.seed_clock_world()
+        # Seq 1 raw 10 + 20 = 30 while seq 2 raw 12 + 0 = 12: individually in
+        # session, but the shared timeline puts later exposure earlier -> reject.
+        self.apply(event("reverse-clock", "calibration", session="clock-shift",
+                         seq_map={"solo": 1, "partner": 2}, boundaries=[1],
+                         left_offsets=[20], right_offsets=[0]))
+        shift = capture.calibrate(self.db, "clock-shift")
+        self.assertEqual("CLOCK_UNCALIBRATABLE", shift["state"])
+        self.assertEqual([], shift["timelines"])
+        self.assertEqual("CLOCK_UNCALIBRATABLE", self.page(1)["state"])
+
+        # +2 on the first exposure ties both at minute 12; ties are permitted.
+        tied = capture.enumerate_timelines({1: 10, 2: 12}, [1], [2], [0])
+        self.assertEqual([{1: 12, 2: 12}], [t["minutes"] for t in tied])
+        reversed_only = capture.enumerate_timelines({1: 10, 2: 12}, [1], [20], [0])
+        self.assertEqual([], reversed_only)
+
+    def test_legal_timeline_crossing_signoff_is_a_distinct_state(self):
+        self.stages(1, 9)
+        self.apply(self.calibration("crossing-clock", right_offsets=[0, 6]))
+        self.assertEqual([44, 50], capture.possible_minutes(self.db, "repair-3"))
+        page = self.page(3)
+        self.assertEqual("RESHOOT_SIGNOFF_CROSSED", page["state"])
+        clock = page["library"]["clock"]
+        self.assertTrue(clock["crosses_signoff"])
+        self.assertFalse(clock["all_authorized"])
+        # The covering window [44, 50] leaves the notice-40/signoff-49 authority.
+        self.assertEqual([44, 50], clock["time_window"])
+        self.assertEqual("TENDER_DENIED", self.tender_proof("window-crossing", "window")["state"])
+        self.assertEqual("TENDER_DENIED", self.tender_proof("exact-crossing", "exact")["state"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_material_missing_is_distinguishable_from_uncalibratable(self):
+        self.stages(1, 9)
+        self.apply(self.calibration("dangling-reading", readings=[{"seq": 99, "minute": 45}]))
+        page = self.page(3)
+        self.assertEqual("CLOCK_MATERIAL_MISSING", page["state"])
+        self.assertNotEqual("CLOCK_UNCALIBRATABLE", page["state"])
+        self.assertEqual("TENDER_DENIED", self.tender_proof("missing-material", "window")["state"])
+
+        # A model without candidate offsets is likewise incomplete material.
+        db2 = connect(":memory:")
+        self.addCleanup(db2.close)
+        ledger.apply(db2, json.dumps([
+            event("s", "session", operator="O", scanner="B", start=0, end=10),
+            event("c", "clock-calibration", session="s", seq_map={"x": 1}, boundaries=[0])]).encode())
+        self.assertEqual("CLOCK_MATERIAL_MISSING", capture.calibrate(db2, "s")["state"])
+
+    def test_named_scan_without_sequence_is_material_missing(self):
+        self.stages(1, 9)
+        self.apply(self.calibration("repair-unlisted", seq_map={"front-1": 1}, boundaries=[1]))
+        self.assertEqual("CLOCK_MATERIAL_MISSING", self.page(3)["state"])
+
+    def test_late_quality_revocation_withdraws_delivered_window_version(self):
+        self.stages(1, 9)
+        self.apply(self.calibration())
+        issued = self.tender_proof("window-first", "window")
+        self.assertEqual("TENDER_ISSUED", issued["state"])
+        version = issued["version"]
+        # Late trusted QC revocation at minute 48 binds on every possible minute.
+        self.apply(event("late-revoke", "scan-check", scan="repair-3", minute=48, verdict="REVOKE"))
+        page = self.page(3)
+        self.assertEqual("RESHOOT_SCAN_UNUSABLE", page["state"])
+        self.assertIn("SCAN_REVOKED", page["library"]["capture_states"])
+        transition = self.report()["transitions"][-1]
+        self.assertEqual(version, transition["version"])
+        self.assertEqual("EVIDENCE_BLOCKED", transition["reason"])
+        self.assertIsNone(next((v for v in self.report()["versions"] if v["state"] == "CURRENT"), None))
+        with self.assertRaisesRegex(Rejected, "no current"):
+            delivery.manifest(self.db, ISSUE, None)
+        self.assertEqual("TENDER_DENIED", self.tender_proof("window-after-revoke", "window")["state"])
+        self.assertEqual("MATCH", ledger.audit(self.db)["audit"])
+
+    def test_quality_cohort_is_compared_at_corrected_minute(self):
+        self.seed_clock_world(end=200)
+        # Raw 10 + 10 = corrected 20. A check at minute 15 follows the raw
+        # capture but precedes the corrected one, so it must not take effect.
+        self.apply(event("shift-1", "clock-calibration", session="clock-shift",
+                         seq_map={"solo": 1}, boundaries=[0], left_offsets=[0], right_offsets=[10]))
+        self.apply(event("early-revoke", "scan-check", scan="solo", minute=15, verdict="REVOKE"))
+        clock = capture.calibrated_scan_clocks(self.db)["solo"]
+        self.assertEqual([(20, "USABLE")], [(t["minute"], t["state"]) for t in clock["timelines"]])
+        # Same corrected-minute CLEAR+REVOKE cohort stays suspended.
+        self.apply(event("same-revoke", "scan-check", scan="solo", minute=20, verdict="REVOKE"),
+                   event("same-clear", "scan-check", scan="solo", minute=20, verdict="CLEAR"))
+        clock = capture.calibrated_scan_clocks(self.db)["solo"]
+        self.assertEqual("QUALITY_CONFLICT", clock["timelines"][0]["state"])
+        self.assertEqual("RESHOOT_SCAN_UNUSABLE", self.page(1)["state"])
+
+    def test_session_window_is_left_closed_right_open_under_correction(self):
+        self.seed_clock_world(start=40, end=48, signoff_minute=49)
+        # solo raw minute 10 + offset 38 lands exactly on the exclusive end 48.
+        self.apply(event("edge-clock", "calibration", session="clock-shift",
+                         seq_map={"solo": 1, "partner": 2}, boundaries=[2],
+                         left_offsets=[38], right_offsets=[0]))
+        clock = capture.calibrated_scan_clocks(self.db)["solo"]
+        self.assertEqual([(48, "OUTSIDE_SESSION")],
+                         [(t["minute"], t["state"]) for t in clock["timelines"]])
+        self.assertIn("OUTSIDE_SESSION", self.page(1)["library"]["capture_states"])
+        self.assertEqual("TENDER_DENIED", self.tender_proof("closed-right", "window")["state"])
+
+    def test_calibration_rejects_more_than_eight_offsets_and_duplicate_sequence(self):
+        nine = list(range(9))
+        with self.assertRaisesRegex(Rejected, "at most 8"):
+            self.apply(self.calibration("too-many", right_offsets=nine))
+        with self.assertRaisesRegex(Rejected, "duplicate exposure sequence"):
+            self.apply(event("dup-seq", "calibration", session="shift-1",
+                             exposures=[{"scan": "a", "seq": 1}, {"scan": "b", "seq": 1}],
+                             boundaries=[1], left_offsets=[0], right_offsets=[0]))
+        self.assertEqual(0, one(self.db, "SELECT count(*) AS n FROM clock_evidence")["n"])
+
+    def test_calibration_accepts_alternative_field_names_and_scan_seq(self):
+        self.stages(1, 9)
+        # A scan may carry its exported sequence directly; evidence uses the
+        # before/after naming and trusted_readings alias.
+        alt = event("alt-clock", "time-calibration", shift="shift-1",
+                    exposures=["front-1", "front-2", "front-3", "back-2", "back-3",
+                              "back-4", "back-5", "repair-3"],
+                    jump_after=[7], offsets_before=[0], offsets_after=[0, 4],
+                    trusted_readings=[{"exposure": 8, "trusted_minute": 48}])
+        self.apply(alt)
+        self.assertEqual([48], capture.possible_minutes(self.db, "repair-3"))
+        self.assertEqual("TENDER_ISSUED", self.tender_proof("alt-exact", "exact")["state"])
+
+    def test_scan_carried_exported_sequence_drives_calibration(self):
+        self.apply(event(ISSUE, "issue", leaves=1, rolls=1),
+                   event("R1", "reel", issue=ISSUE, rank=1, direction="forward", frames=[
+                       {"slot": 1, "page": 1, "fingerprint": hash_of("leaf-1")}]),
+                   event("clock-shift", "session", operator="O", scanner="B", start=0, end=1000),
+                   event("solo", "scan", session="clock-shift", frame="R1-0001", minute=10, seq=1,
+                         fingerprint=hash_of("leaf-1"), image=hash_of("img-solo"), grade=90, ticket="n1"),
+                   event("partner", "scan", session="clock-shift", frame="R1-0001", minute=12, seq=2,
+                         fingerprint=hash_of("leaf-1"), image=hash_of("img-partner"), grade=90, ticket=None),
+                   event("n1", "notice", issue=ISSUE, page=1, minute=0),
+                   event("accept-1", "signoff", notice="n1", scan="solo", officer="C",
+                         minute=50, action="ACCEPT"),
+                   event("seq-clock", "clock-calibration", session="clock-shift", boundaries=[1],
+                         left_offsets=[0], right_offsets=[3]))
+        self.assertEqual([10], capture.possible_minutes(self.db, "solo"))
+        self.assertEqual([15], capture.possible_minutes(self.db, "partner"))
+        self.assertEqual("RESHOOT_ACCEPTED", self.page(1)["state"])
+
+    def test_uncalibrated_shift_keeps_singleton_raw_minute_proof(self):
+        self.stages(1, 4)
+        self.tender("raw-proof")
+        page = delivery.manifest(self.db, ISSUE, None)["manifest"]["pages"][0]
+        self.assertEqual([21], page["possible_minutes"])
+        self.assertEqual([21, 21], page["time_window"])
+        self.assertEqual(21, page["corrected_minute"])
+        self.assertEqual("exact", page["time_proof"])

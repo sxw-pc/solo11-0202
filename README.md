@@ -43,6 +43,26 @@ python -B -m microfilm_reshoot --db work.sqlite show NEWS-42
 | `library` / `show` | 每页最新漏页单生效，同刻两单稳定挂起。签批可接受、重开、撤销漏页判断。批准扫描须带本单号并落于同一逻辑页，拍摄时间介于通知和签收之间。相邻认证卷的备用帧可用于有效补拍，交付同时记录主帧与实扫帧。 | 在演示末段后导入 `bad_library.json`，误签原扫使版本失效。 |
 | `tender` / `manifest` | 声明卷、卷间边界和每页实扫都齐备才发版。清单变化或证据阻断撤回现行版；证据恢复需新申请。 | 封版前可导入 `tender_denied.json`，历史记录不产生版本的申请。 |
 
+## 校时复核与拍摄时间证明
+
+补拍机在一个操作员班次内最多发生一次时钟跳变。实扫回执的 `minute` 始终是机台原始分钟，校时证据作为另一类事件（`clock-calibration`，兼容 `calibration`、`clock`、`time-calibration` 等名称）随原始回执入账，原始分钟不被改写。一个班次的证据给出：
+
+- `seq_map`（或 `exposures`/`sequences`，也可直接在 `scan` 事件上给可选 `seq`）：扫描回执与班次内唯一曝光序号的对应，序号即实际曝光先后；
+- `boundaries`：候选跳变边界，整数 `b` 表示序号 `<= b` 用左偏移、`> b` 用右偏移（`right_starts` 按“右侧首个序号”解释）；
+- `left_offsets` / `right_offsets`：两侧各自至多八个整数分钟候选偏移，校正分钟 = 原始分钟 + 偏移；
+- `readings`：指向任一曝光序号（或扫描回执）的可信馆方分钟读数；也可用单独的 `clock-reading` 事件后补。
+
+系统枚举整班共享的 `(边界, 左偏移, 右偏移)`，只保留满足全部可信读数、且校正分钟沿序号单调不减（允许同分钟，排除倒序）的“整班时间线”。没有校时证据的班次完全按原始分钟旧规则处理。
+
+馆方漏页单、签收和质检一律与校正分钟比较：每条仍成立的时间线上，指定实扫都必须满足左闭右开会话窗 `start <= 校正分钟 < end`、`notice.minute <= 校正分钟 <= signoff.minute`，且以校正拍摄分钟起效的质检队列能通过，签收才是 `RESHOOT_ACCEPTED`。三类不可出单状态在 `library.clock` 中可区分：`CLOCK_MATERIAL_MISSING`（缺序号/候选集等材料）、`CLOCK_UNCALIBRATABLE`（没有任何整班共同解释，包括单扫各自可行但整班无解）、`RESHOOT_SIGNOFF_CROSSED`（仍合法的时间线越过签收分钟）。
+
+交付有两种时间证明约定，可经 `tender` 事件的 `proof`/`time_proof`/`mode` 字段或 `delivery.compose(..., proof=...)` 选择：
+
+- `exact`（默认，精确时刻版）：该补拍在全部时间线中只能有一个可能分钟，否则以 `PROOF_EXACT:<页>:EXACT_TIME_PROOF_REQUIRED` 阻断出单，待补可信读数；
+- `window`（时间窗版）：允许同一图片有多个可能分钟，清单给出覆盖全部可能分钟的 `possible_minutes` 与校正窗口 `time_window=[最小, 最大]`（同时附 `corrected_window`/`capture_window` 等别名），且窗口整体仍在会话与漏页通知—签收授权范围内。
+
+清单同时保留 `captured_minute`/`original_minute`（机台原始分钟）与 `corrected_minute`（唯一时）。后补校时或质检会重算现行版资格并按既有规则撤回版本；已签发版本快照与原始批次回执不变，仍可按版本核对，`audit` 重放保持 `MATCH`。
+
 ## 批次与版本
 
 批次顺序决定何时知道事实，有效分钟决定同一类证据的先后。每个落库批次按最终事务状态保存版次报告和版本转移。一批补齐相互依赖的证据可避免记录一个实际未对外可见的中间状态。相同原件重试返回 `ALREADY_IMPORTED`，不同原件中的相同事件可重叠导入。已签发清单保存 SHA-256，并含帧码、实扫事件、图片摘要、会话人员和补拍单号。撤回只影响现行资格，历史清单仍可按编号核对。

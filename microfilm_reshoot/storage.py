@@ -47,10 +47,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE TABLE IF NOT EXISTS scans (
     id TEXT PRIMARY KEY, session TEXT NOT NULL, frame TEXT NOT NULL, minute INTEGER NOT NULL,
-    fingerprint TEXT NOT NULL, image TEXT NOT NULL, grade INTEGER NOT NULL, ticket TEXT
+    fingerprint TEXT NOT NULL, image TEXT NOT NULL, grade INTEGER NOT NULL, ticket TEXT, seq INTEGER
 );
 CREATE TABLE IF NOT EXISTS scan_checks (
     id TEXT PRIMARY KEY, scan TEXT NOT NULL, minute INTEGER NOT NULL, verdict TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS clock_evidence (
+    id TEXT PRIMARY KEY, session TEXT NOT NULL, seq_map TEXT NOT NULL, boundaries TEXT NOT NULL,
+    left_offsets TEXT NOT NULL, right_offsets TEXT NOT NULL, readings TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS notices (
     id TEXT PRIMARY KEY, issue TEXT NOT NULL, page INTEGER NOT NULL, minute INTEGER NOT NULL
@@ -59,11 +63,13 @@ CREATE TABLE IF NOT EXISTS signoffs (
     id TEXT PRIMARY KEY, notice TEXT NOT NULL, scan TEXT, officer TEXT NOT NULL, minute INTEGER NOT NULL, action TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tenders (
-    id TEXT PRIMARY KEY, issue TEXT NOT NULL, batch INTEGER NOT NULL REFERENCES batches(seq)
+    id TEXT PRIMARY KEY, issue TEXT NOT NULL, batch INTEGER NOT NULL REFERENCES batches(seq),
+    proof TEXT NOT NULL DEFAULT 'exact'
 );
 CREATE TABLE IF NOT EXISTS versions (
     tender TEXT PRIMARY KEY REFERENCES tenders(id), issue TEXT NOT NULL, seq INTEGER NOT NULL,
-    snapshot TEXT NOT NULL, sha TEXT NOT NULL, UNIQUE(issue, seq)
+    snapshot TEXT NOT NULL, sha TEXT NOT NULL, proof TEXT NOT NULL DEFAULT 'exact',
+    UNIQUE(issue, seq)
 );
 CREATE TABLE IF NOT EXISTS snapshots (
     batch INTEGER NOT NULL REFERENCES batches(seq), issue TEXT NOT NULL REFERENCES issues(id),
@@ -75,7 +81,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
 # These projections are independently compared with a clean evidence replay.
 TABLES = (
     "batches", "events", "issues", "reels", "frames", "witnesses", "sessions",
-    "scans", "scan_checks", "notices", "signoffs", "tenders", "versions", "snapshots",
+    "scans", "scan_checks", "clock_evidence", "notices", "signoffs", "tenders",
+    "versions", "snapshots",
 )
 
 
@@ -87,7 +94,20 @@ def connect(path, *, readonly=False):
     db.execute("PRAGMA foreign_keys = ON")
     if not readonly:
         db.executescript(SCHEMA)
+        migrate(db)
     return db
+
+
+def migrate(db):
+    """Add columns introduced after the baseline without touching raw receipts."""
+    columns = {table: {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+               for table in ("scans", "tenders", "versions")}
+    if "seq" not in columns["scans"]:
+        db.execute("ALTER TABLE scans ADD COLUMN seq INTEGER")
+    if "proof" not in columns["tenders"]:
+        db.execute("ALTER TABLE tenders ADD COLUMN proof TEXT NOT NULL DEFAULT 'exact'")
+    if "proof" not in columns["versions"]:
+        db.execute("ALTER TABLE versions ADD COLUMN proof TEXT NOT NULL DEFAULT 'exact'")
 
 
 def rows(db, sql, *parameters):
@@ -111,6 +131,10 @@ def text(value):
 
 def natural(value):
     return type(value) is int and 0 <= value < 2**63
+
+
+def integer(value):
+    return type(value) is int and -(2**63) <= value < 2**63
 
 
 def positive(value):
